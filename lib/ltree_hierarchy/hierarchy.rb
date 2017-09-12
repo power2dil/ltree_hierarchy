@@ -210,6 +210,44 @@ module Ltree
       def leaves
         descendants.leaves
       end
+      
+      def arrange_serializable
+            query = <<-SQL 
+                WITH RECURSIVE c_with_level AS (
+                    SELECT *, 1 as lvl
+                    FROM #{ltree_scope.table_name}
+                    WHERE id = #{self.id} AND  parent_id IS NULL
+                  UNION ALL
+                    SELECT #{ltree_scope.table_name}.*, c_with_level.lvl + 1 as lvl
+                    FROM #{ltree_scope.table_name}
+                    JOIN c_with_level ON ltree2text(subpath(#{ltree_scope.table_name}.path,nlevel(#{ltree_scope.table_name}.path)-2 ,nlevel(#{ltree_scope.table_name}.path))) = CONCAT(subpath(c_with_level.path,nlevel(c_with_level.path)-1,nlevel(c_with_level.path)),'.',#{ltree_scope.table_name}.id)
+                ),
+                maxlvl AS (
+                  SELECT max(lvl) maxlvl FROM c_with_level
+                ),
+                c_tree AS (
+                    SELECT c_with_level.*, json '[]' children
+                    FROM c_with_level, maxlvl
+                    WHERE lvl = maxlvl
+                  UNION ALL
+                    SELECT (c_with_level).*, json_agg(c_tree) children FROM (
+                      SELECT c_with_level, c_tree
+                      FROM c_tree
+                      JOIN c_with_level ON ltree2text(subpath(c_tree.path,nlevel(c_tree.path)-2,nlevel(c_tree.path))) = CONCAT(subpath(c_with_level.path,nlevel(c_with_level.path)-1,nlevel(c_with_level.path)),'.',c_tree.id)
+                    ) json_agg
+                    GROUP BY json_agg.c_with_level
+                )
+                SELECT row_to_json(c_tree)::jsonb json_tree
+                FROM c_tree
+                WHERE lvl = 1;
+              SQL
+            results = ActiveRecord::Base.connection.execute(query)
+            serializables = []
+            results.each do |result|
+             serializables << JSON.parse(result["json_tree"]) 
+            end
+            serializables
+       end
     end
   end
 end
